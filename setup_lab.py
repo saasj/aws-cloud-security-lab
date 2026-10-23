@@ -3,6 +3,11 @@
 Step 1 (baseline): KMS key -> encrypted CloudTrail bucket -> multi-region trail
 -> account-level S3 Block Public Access.
 
+Step 2 (misconfig): deliberately weak test resources for audit.py to find --
+an S3 bucket with no versioning / no KMS / no TLS-only policy, an IAM role with
+an Allow */* inline policy (neutered by a deny-all permissions boundary), and a
+security group allowing SSH from 0.0.0.0/0 (attached to nothing).
+
 Safe to re-run: every resource is looked up first and only created if missing;
 policies and settings are re-applied (the put calls are idempotent).
 """
@@ -18,6 +23,10 @@ TAG_KEY, TAG_VALUE = "Project", "SecurityLab"
 TRAIL_NAME = "seclab-trail"
 KEY_ALIAS = "alias/seclab-cloudtrail"
 TRAIL_BUCKET_PREFIX = "seclab-cloudtrail-"
+WEAK_BUCKET_PREFIX = "seclab-weak-bucket-"
+WEAK_ROLE = "SecLab-OverPrivilegedRole"
+BOUNDARY_POLICY = "SecLab-DenyAllBoundary"
+OPEN_SSH_SG = "seclab-open-ssh"
 
 
 def step(msg):
@@ -240,7 +249,115 @@ def ensure_account_bpa(s3control, account):
     info("all four settings on for every bucket in the account (not taggable; left on at teardown)")
 
 
+# ---------------------------------------------------------------- Step 2: misconfigurations
+
+def ensure_weak_bucket(s3, region):
+    step("MISCONFIG: weak S3 bucket")
+    bucket = find_bucket(s3, WEAK_BUCKET_PREFIX, region)
+    if bucket:
+        info(f"exists: {bucket}")
+    else:
+        bucket = WEAK_BUCKET_PREFIX + secrets.token_hex(4)
+        s3.create_bucket(Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": region})
+        s3.get_waiter("bucket_exists").wait(Bucket=bucket)
+        info(f"created: {bucket}")
+    s3.put_bucket_tagging(Bucket=bucket,
+                          Tagging={"TagSet": [{"Key": TAG_KEY, "Value": TAG_VALUE}]})
+    # Deliberately NOT configured: versioning, SSE-KMS, TLS-only bucket policy.
+    # S3 applies SSE-S3 to every new bucket (since Jan 2023), so "unencrypted" is
+    # no longer possible -- the weakness is no customer-managed key.
+    info("no versioning, default SSE-S3 only, no bucket policy (still private: Block Public Access)")
+    return bucket
+
+
+def ensure_weak_role(iam, account):
+    step("MISCONFIG: over-privileged IAM role")
+    tags = [{"Key": TAG_KEY, "Value": TAG_VALUE}]
+    boundary_arn = f"arn:aws:iam::{account}:policy/{BOUNDARY_POLICY}"
+    try:
+        iam.create_policy(
+            PolicyName=BOUNDARY_POLICY,
+            Description="Security lab: deny-all permissions boundary",
+            PolicyDocument=json.dumps({
+                "Version": "2012-10-17",
+                "Statement": [{"Sid": "DenyAll", "Effect": "Deny", "Action": "*", "Resource": "*"}],
+            }),
+            Tags=tags,
+        )
+        info(f"created boundary policy: {BOUNDARY_POLICY}")
+    except iam.exceptions.EntityAlreadyExistsException:
+        info(f"exists: boundary policy {BOUNDARY_POLICY}")
+
+    try:
+        iam.create_role(
+            RoleName=WEAK_ROLE,
+            Description="Security lab: deliberately over-privileged (neutered by boundary)",
+            AssumeRolePolicyDocument=json.dumps({
+                "Version": "2012-10-17",
+                "Statement": [{
+                    "Effect": "Allow",
+                    "Principal": {"AWS": f"arn:aws:iam::{account}:root"},  # own account only
+                    "Action": "sts:AssumeRole",
+                }],
+            }),
+            PermissionsBoundary=boundary_arn,
+            Tags=tags,
+        )
+        info(f"created role: {WEAK_ROLE} (trust: this account only)")
+    except iam.exceptions.EntityAlreadyExistsException:
+        iam.put_role_permissions_boundary(RoleName=WEAK_ROLE, PermissionsBoundary=boundary_arn)
+        info(f"exists: role {WEAK_ROLE}, boundary re-applied")
+
+    iam.put_role_policy(
+        RoleName=WEAK_ROLE,
+        PolicyName="SecLab-AllowEverything",
+        PolicyDocument=json.dumps({
+            "Version": "2012-10-17",
+            "Statement": [{"Effect": "Allow", "Action": "*", "Resource": "*"}],
+        }),
+    )
+    info("inline policy Allow */* attached; effective permissions = none (deny-all boundary)")
+
+
+def ensure_open_ssh_sg(ec2):
+    step("MISCONFIG: security group with SSH open to the internet")
+    vpc_id = ec2.describe_vpcs(Filters=[{"Name": "is-default", "Values": ["true"]}])["Vpcs"][0]["VpcId"]
+    groups = ec2.describe_security_groups(Filters=[
+        {"Name": "group-name", "Values": [OPEN_SSH_SG]},
+        {"Name": "vpc-id", "Values": [vpc_id]},
+    ])["SecurityGroups"]
+    if groups:
+        sg_id = groups[0]["GroupId"]
+        info(f"exists: {OPEN_SSH_SG} ({sg_id})")
+    else:
+        sg_id = ec2.create_security_group(
+            GroupName=OPEN_SSH_SG,
+            Description="Security lab: SSH open to 0.0.0.0/0 (attached to nothing)",
+            VpcId=vpc_id,
+            TagSpecifications=[{"ResourceType": "security-group",
+                                "Tags": [{"Key": TAG_KEY, "Value": TAG_VALUE}]}],
+        )["GroupId"]
+        info(f"created: {OPEN_SSH_SG} ({sg_id}) in default VPC {vpc_id}")
+    try:
+        ec2.authorize_security_group_ingress(GroupId=sg_id, IpPermissions=[{
+            "IpProtocol": "tcp", "FromPort": 22, "ToPort": 22,
+            "IpRanges": [{"CidrIp": "0.0.0.0/0", "Description": "Security lab: intentionally open SSH"}],
+        }])
+        info("ingress rule added: tcp/22 from 0.0.0.0/0")
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "InvalidPermission.Duplicate":
+            raise
+        info("ingress rule tcp/22 from 0.0.0.0/0 already present")
+
+
 # ---------------------------------------------------------------- main
+
+def misconfig(session):
+    account = session.client("sts").get_caller_identity()["Account"]
+    ensure_weak_bucket(session.client("s3"), session.region_name)
+    ensure_weak_role(session.client("iam"), account)
+    ensure_open_ssh_sg(session.client("ec2"))
+
 
 def baseline(session):
     region = session.region_name
@@ -258,11 +375,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--region", default="us-east-2")
     parser.add_argument("--profile")
+    parser.add_argument("--step", choices=["baseline", "misconfig", "all"], default="all")
     args = parser.parse_args()
 
     session = boto3.Session(profile_name=args.profile, region_name=args.region)
-    baseline(session)
-    print("\nBaseline complete.")
+    if args.step in ("baseline", "all"):
+        baseline(session)
+        print("\nBaseline complete.")
+    if args.step in ("misconfig", "all"):
+        misconfig(session)
+        print("\nMisconfigured test resources complete.")
 
 
 if __name__ == "__main__":
