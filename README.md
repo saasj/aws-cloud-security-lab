@@ -121,6 +121,74 @@ removed, not a fix for the policy itself.
 | `FAIL IAM-5`: root MFA not enabled | Root credentials in a managed member account are typically removed centrally by the organization. Verify with the account owner; if root has no password, this is an accepted exception. |
 | `WARN IAM-8`: no password policy | No IAM users exist (access is via the sandbox role), so the risk is low; setting a policy is still good hygiene. |
 
+## Step 4 — CloudTrail risky-activity review (`cloudtrail_review.py`)
+
+Reviews recent management events with CloudTrail **LookupEvents**, the free
+90-day event history. It works even without a trail.
+
+```
+python cloudtrail_review.py                     # last 24 hours
+python cloudtrail_review.py --hours 168 --min-severity MEDIUM
+python cloudtrail_review.py --json --redact
+# options: --region, --profile, --max-scan N (default 5000 events per region)
+# exit code: 1 if any HIGH finding, else 0
+```
+
+**How it works**
+
+- **Two regions by default.** Event history is regional, and **IAM, STS and
+  console sign-in events are recorded in us-east-1** whatever region you work
+  in. The script reviews `--region` *and* us-east-1. Without this it would miss
+  every IAM change the lab made.
+- **Two passes per region:**
+  1. Targeted `EventName` lookups for each of 31 risky actions, so none are missed.
+  2. A capped scan of *all* events, to find root activity and repeated
+     `AccessDenied` errors, which LookupEvents can't filter on. Truncation is
+     reported, never silent.
+- **Severity uses the request parameters, not just the event name:**
+
+| Event | LOW / MEDIUM | Raised to HIGH when |
+|---|---|---|
+| `AuthorizeSecurityGroupIngress` | private CIDR (LOW); world on other ports (MEDIUM) | `0.0.0.0/0` or `::/0` on 22, 3389, or all traffic |
+| `PutRolePolicy` / `PutUserPolicy` / `PutGroupPolicy` | any inline policy (MEDIUM) | policy grants `"*"` on `"*"` |
+| `AttachRolePolicy` / `AttachUserPolicy` / `AttachGroupPolicy` | any managed policy (MEDIUM) | `AdministratorAccess` or `IAMFullAccess` |
+| `CreatePolicyVersion` | MEDIUM | `"*"` on `"*"` and `setAsDefault` |
+| `PutBucketPolicy` | MEDIUM | Allow to `Principal "*"` |
+| `PutPublicAccessBlock` / `PutAccountPublicAccessBlock` | all on (LOW) | any setting turned off |
+| `UpdateAssumeRolePolicy` | MEDIUM | trust allows `Principal "*"` |
+| `ConsoleLogin` | federated/SSO (LOW); failure (MEDIUM) | root or IAM user without MFA |
+| Always HIGH | | `StopLogging`, `DeleteTrail`, `DeleteFlowLogs`, `DisableKey`, `ScheduleKeyDeletion`, `Delete*PublicAccessBlock`, `CreateAccessKey`, `Delete*PermissionsBoundary`, any root activity |
+
+Failed attempts are still reported, marked `[FAILED: <errorCode>]`. An
+attempted `StopLogging` matters even if it was denied.
+
+- **Rate limit.** LookupEvents allows about 2 requests per second; boto3's
+  adaptive retry mode handles the throttling. A 24-hour review of this account
+  (~930 events) takes about 30 seconds.
+
+### Results against the lab
+
+Full redacted output: [`docs/sample-cloudtrail-review.txt`](docs/sample-cloudtrail-review.txt)
+(HIGH 4, MEDIUM 12, LOW 8).
+
+**The lab build's own risky actions were found** (each twice, because `setup_lab.py` was run twice):
+
+| Lab action | Finding |
+|---|---|
+| Open SSH rule | `HIGH AuthorizeSecurityGroupIngress sg-…: tcp/22 from 0.0.0.0/0`. The rerun's attempt shows `[FAILED: Client.InvalidPermission.Duplicate]` |
+| `*:*` inline policy | `HIGH PutRolePolicy SecLab-OverPrivilegedRole: … grants "*" on "*"` (found in **us-east-1**) |
+| Trail bucket policy, trail settings | `MEDIUM PutBucketPolicy`, `MEDIUM UpdateTrail` |
+| Role and boundary creation | `LOW CreateRole`, `LOW CreatePolicy` (the rerun shows `EntityAlreadyExistsException`) |
+| Account Block Public Access | `LOW PutAccountPublicAccessBlock account: all settings on` |
+
+**Other activity in the account:**
+
+| Finding | Assessment |
+|---|---|
+| `MEDIUM ConsoleLogin` ×2: failed sign-ins, user `HIDDEN_DUE_TO_SECURITY_REASONS` | AWS hides the username when it doesn't match an IAM user, so that a password typed into the username field is never logged. Confirm with the account owner that these were their own attempts. |
+| `MEDIUM UpdateAssumeRolePolicy` ×3 via `account.amazonaws.com` | AWS Organizations account provisioning updating the managed roles that `audit.py` flagged in IAM-3. Expected. |
+| `MEDIUM AccessDenied (aggregate)` | Calls blocked by the SCP (`ListAnalyzers`, the Access Analyzer probe made while planning this lab) plus console background calls. This is the SCP visibly working. |
+
 ## Verification
 
 Each control was confirmed independently with the AWS CLI rather than by
@@ -300,6 +368,27 @@ trust service (ok)           -> (none)
 account becomes `111122223333` and each other account gets its own placeholder,
 so cross-account findings still read correctly. The exit code was `1` (FAILs
 present), as designed.
+
+### Step 4: event analyser tested against crafted events
+
+These cover attacks the lab didn't perform, including cases that must stay low:
+
+```
+StopLogging                    -> HIGH
+PutBucketPolicy public         -> HIGH    b: Allow to Principal "*"
+PutBucketPolicy private        -> MEDIUM
+PutPublicAccessBlock off       -> HIGH    b: turned OFF BlockPublicAcls
+AttachRolePolicy admin         -> HIGH    r: attached AdministratorAccess
+AttachRolePolicy readonly      -> MEDIUM
+CreatePolicyVersion */* dflt   -> HIGH    setAsDefault=True grants "*" on "*"
+UpdateAssumeRolePolicy anyone  -> HIGH    trust policy allows Principal "*"
+SG all traffic world           -> HIGH    all traffic from 0.0.0.0/0
+SG 443 world                   -> MEDIUM  tcp/443 from 0.0.0.0/0
+SG 22 private CIDR             -> LOW     no internet-wide rule
+Console IAM user no MFA        -> HIGH    Console sign-in without MFA
+Console SSO role               -> LOW     Console sign-in (federated/SSO)
+CreateAccessKey failed         -> HIGH    [FAILED: AccessDenied]
+```
 
 ### Idempotency: `setup_lab.py` re-run
 

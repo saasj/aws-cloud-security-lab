@@ -1,0 +1,30 @@
+CloudTrail risky-activity review  last 24h  regions us-east-2, us-east-1
+  us-east-2: 630 events scanned for root/AccessDenied
+  us-east-1: 300 events scanned for root/AccessDenied
+
+  YYYY-MM-DD 20:16:43  HIGH    AuthorizeSecurityGroupIngress   role/AccountFullAccessRole/xxxxxxxx  x.x.x.x                us-east-2  sg-xxxxxxxxxxxxxxxxx: tcp/22 from 0.0.0.0/0 [FAILED: Client.InvalidPermission.Duplicate]
+  YYYY-MM-DD 20:16:42  HIGH    PutRolePolicy                   role/AccountFullAccessRole/xxxxxxxx  x.x.x.x                us-east-1  SecLab-OverPrivilegedRole: inline policy SecLab-AllowEverything grants "*" on "*"
+  YYYY-MM-DD 20:13:43  HIGH    AuthorizeSecurityGroupIngress   role/AccountFullAccessRole/xxxxxxxx  x.x.x.x                us-east-2  sg-xxxxxxxxxxxxxxxxx: tcp/22 from 0.0.0.0/0
+  YYYY-MM-DD 20:13:42  HIGH    PutRolePolicy                   role/AccountFullAccessRole/xxxxxxxx  x.x.x.x                us-east-1  SecLab-OverPrivilegedRole: inline policy SecLab-AllowEverything grants "*" on "*"
+  YYYY-MM-DD 20:41:30  MEDIUM  AccessDenied (aggregate)        role/AccountFullAccessRole/xxxxxxxx  -                      us-east-2  5 denied calls: ListReceivedLicenses x4, ListAnalyzers x1
+  YYYY-MM-DD 20:41:30  MEDIUM  AccessDenied (aggregate)        role/AccountFullAccessRole/xxxxxxxx  -                      us-east-1  5 denied calls: ListAnalyzers x2, GetEnrollmentStatus x1, DescribeChecks x1, DescribeAccount x1
+  YYYY-MM-DD 20:16:40  MEDIUM  UpdateTrail                     role/AccountFullAccessRole/xxxxxxxx  x.x.x.x                us-east-2  seclab-trail
+  YYYY-MM-DD 20:16:39  MEDIUM  PutBucketPolicy                 role/AccountFullAccessRole/xxxxxxxx  x.x.x.x                us-east-2  seclab-cloudtrail-xxxxxxxx
+  YYYY-MM-DD 19:46:30  MEDIUM  UpdateTrail                     role/AccountFullAccessRole/xxxxxxxx  x.x.x.x                us-east-2  seclab-trail
+  YYYY-MM-DD 19:46:29  MEDIUM  PutBucketPolicy                 role/AccountFullAccessRole/xxxxxxxx  x.x.x.x                us-east-2  seclab-cloudtrail-xxxxxxxx
+  YYYY-MM-DD 19:45:13  MEDIUM  PutBucketPolicy                 role/AccountFullAccessRole/xxxxxxxx  x.x.x.x                us-east-2  seclab-cloudtrail-xxxxxxxx
+  YYYY-MM-DD 18:58:15  MEDIUM  ConsoleLogin                    user/HIDDEN_DUE_TO_SECURITY_REASONS  x.x.x.x                us-east-1  Failed console sign-in
+  YYYY-MM-DD 18:54:15  MEDIUM  ConsoleLogin                    user/HIDDEN_DUE_TO_SECURITY_REASONS  x.x.x.x                us-east-1  Failed console sign-in
+  YYYY-MM-DD 17:16:03  MEDIUM  UpdateAssumeRolePolicy          role/AccountFullAccessRole/Account   account.amazonaws.com  us-east-1  AccountFullAccessRole
+  YYYY-MM-DD 17:16:01  MEDIUM  UpdateAssumeRolePolicy          role/ManagedAccountAdmin/Account     account.amazonaws.com  us-east-1  AWSManagedAdvancedFeaturesActivationRole
+  YYYY-MM-DD 17:16:01  MEDIUM  UpdateAssumeRolePolicy          role/ManagedAccountAdmin/Account     account.amazonaws.com  us-east-1  AWSManagedAccountManagementAccessRole
+  YYYY-MM-DD 20:16:42  LOW     CreatePolicy                    role/AccountFullAccessRole/xxxxxxxx  x.x.x.x                us-east-1  SecLab-DenyAllBoundary [FAILED: EntityAlreadyExistsException]
+  YYYY-MM-DD 20:16:42  LOW     CreateRole                      role/AccountFullAccessRole/xxxxxxxx  x.x.x.x                us-east-1  SecLab-OverPrivilegedRole [FAILED: EntityAlreadyExistsException]
+  YYYY-MM-DD 20:16:41  LOW     PutAccountPublicAccessBlock     role/AccountFullAccessRole/xxxxxxxx  x.x.x.x                us-east-2  account: all settings on
+  YYYY-MM-DD 20:13:42  LOW     CreatePolicy                    role/AccountFullAccessRole/xxxxxxxx  x.x.x.x                us-east-1  SecLab-DenyAllBoundary
+  YYYY-MM-DD 20:13:42  LOW     CreateRole                      role/AccountFullAccessRole/xxxxxxxx  x.x.x.x                us-east-1  SecLab-OverPrivilegedRole
+  YYYY-MM-DD 19:46:30  LOW     PutAccountPublicAccessBlock     role/AccountFullAccessRole/xxxxxxxx  x.x.x.x                us-east-2  account: all settings on
+  YYYY-MM-DD 19:45:15  LOW     PutAccountPublicAccessBlock     role/AccountFullAccessRole/xxxxxxxx  x.x.x.x                us-east-2  account: all settings on
+  YYYY-MM-DD 17:16:11  LOW     ConsoleLogin                    role/AccountFullAccessRole/xxxxxxxx  x.x.x.x                us-east-1  Console sign-in (federated/SSO)
+
+Summary: HIGH 4  MEDIUM 12  LOW 8   |   privilege escalation 7  data exposure 6  identity 3  network exposure 2  discovery 2  defense evasion 2  persistence 2
