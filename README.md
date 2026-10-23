@@ -333,16 +333,27 @@ $ aws cloudtrail get-trail-status --name seclab-trail \
 
 $ aws cloudtrail validate-logs \
     --trail-arn arn:aws:cloudtrail:us-east-2:111122223333:trail/seclab-trail \
-    --start-time 2026-10-23T19:30:00Z
-Results found for 2026-10-23T19:30:00Z to 2026-10-23T19:45:14Z:
-1/1 digest files valid
+    --start-time 2026-10-23T19:30:00Z --verbose
+Digest file  s3://seclab-cloudtrail-xxxxxxxx/AWSLogs/111122223333/CloudTrail-Digest/us-east-2/2026/10/23/..._20261023T214514Z.json.gz  valid
+Log file     s3://seclab-cloudtrail-xxxxxxxx/AWSLogs/111122223333/CloudTrail/us-east-2/2026/10/23/..._20261023T2050Z_....json.gz       valid
+...
+Results found for 2026-10-23T19:30:00Z to 2026-10-23T21:45:14Z:
+3/3 digest files valid
+15/15 log files valid
 ```
 
 `LatestDeliveryError` is `None`, so both the bucket policy and the KMS key
-policy allow CloudTrail to write. The first digest's signature verifies. That
-digest covers a window that ended before the first log file was delivered, so
-it references no log files yet; later digests also validate the SHA-256 hash of
-each log file.
+policy allow CloudTrail to write. `validate-logs` checks each hourly digest's
+signature, follows the chain of digests (each one references the previous),
+and compares every log file's SHA-256 hash with its digest. Together that
+proves no log file was changed or deleted after delivery. The first digest
+(19:30–19:45 UTC) covers a window before the first log file arrived, so it
+references none. That's why an earlier run, made right after setup, reported
+only `1/1 digest files valid`.
+
+Because the trail is multi-region, CloudTrail writes a separate digest chain
+for each region (17 here). This run's verbose output lists only the us-east-2
+digest chain (the trail's home region).
 
 ### Bucket encryption, versioning, Block Public Access
 
