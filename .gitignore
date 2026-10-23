@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local lab notes / generated reports (may contain account details)
+labprompt.txt
+lab-prompt.txt
+reports/
+*.json
