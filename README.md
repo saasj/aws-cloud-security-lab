@@ -33,6 +33,11 @@ instances, GuardDuty, Security Hub or AWS Config. All lab resources are tagged
   that must *not* be flagged. Real findings in the account were assessed rather
   than ignored.
 
+## How this was built
+
+Built with Claude Code as a pair-programming assistant. I designed the scope
+and controls, reviewed and approved each change, and verified the results.
+
 ## Architecture
 
 ```mermaid
