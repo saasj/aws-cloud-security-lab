@@ -50,6 +50,77 @@ python setup_lab.py --step misconfig  # Step 2 only
 # options: --region us-east-2 (default), --profile NAME
 ```
 
+## Step 3 — Security configuration audit (`audit.py`)
+
+A read-only boto3 auditor. It only calls Describe/Get/List APIs, plus IAM's
+credential-report generation, which changes nothing.
+
+```
+python audit.py                    # table report for us-east-2
+python audit.py --json             # machine-readable findings
+python audit.py --redact           # mask account IDs (for sharing output)
+# options: --region, --profile, --no-color
+# exit code: 1 if any FAIL, 2 if a check could not run (ERROR), else 0
+```
+
+| ID | Check | CIS AWS Foundations* |
+|---|---|---|
+| CT-1..6 | A multi-region trail is logging; global service events; log file validation; SSE-KMS | 3.1, 3.2, 3.5 |
+| S3-1 | Account-level Block Public Access (all four settings) | 2.1.4 |
+| S3-2 | Bucket-level Block Public Access | 2.1.4 |
+| S3-3 | Versioning enabled | — |
+| S3-4 | Default encryption uses KMS (SSE-S3 only = WARN) | — |
+| S3-5 | Bucket policy denies requests where `aws:SecureTransport` is false | 2.1.1 |
+| IAM-1 | Customer-managed and inline policies: `Allow *` on `*`, `NotAction` + Allow, `svc:*` on `*` (FAIL for iam/sts/kms/organizations/cloudtrail/account, WARN otherwise) | 1.16 |
+| IAM-2 | `AdministratorAccess` / `IAMFullAccess` (FAIL) or `PowerUserAccess` (WARN) attached | 1.16 |
+| IAM-3 | Role trust policies: `Principal "*"`, or external accounts without `sts:ExternalId` / `aws:PrincipalOrgID` | — |
+| IAM-4, 5 | Root account has no access keys; root MFA enabled | 1.4, 1.5 |
+| IAM-6, 7 | Console users without MFA; active access keys older than 90 days | 1.10, 1.14 |
+| IAM-8 | Password policy present, minimum length ≥ 14 | 1.8 |
+| EC2-1 | Security groups allowing SSH/RDP/all traffic from `0.0.0.0/0` or `::/0` (notes whether the group is attached) | 5.2, 5.3 |
+
+\* Approximate mapping to CIS AWS Foundations Benchmark v3.0 numbering. Check it
+against the benchmark version you use.
+
+**Replacing IAM Access Analyzer.** An SCP blocks Access Analyzer in this
+account, so IAM-1 to IAM-3 analyse the policy documents directly. One
+`GetAccountAuthorizationDetails` call returns every user, group and role, with
+inline policies, attached managed policies, trust policies and permissions
+boundaries. IAM-3 covers the main external-access question Access Analyzer
+answers for roles. Unlike Access Analyzer, it doesn't do formal reasoning about
+conditions or check resource policies on other services.
+
+**Errors are findings, not silent passes.** If an API call is denied (for
+example by an SCP), that section reports `ERROR` instead of crashing or passing.
+
+### Results against the lab
+
+Full redacted output: [`docs/sample-audit-output.txt`](docs/sample-audit-output.txt)
+(PASS 14, FAIL 6, WARN 4).
+
+**All three deliberate misconfigurations were detected:**
+
+| Planted weakness | Finding |
+|---|---|
+| Weak bucket: no versioning | `FAIL S3-3 Versioning: Never enabled` |
+| Weak bucket: no customer-managed key | `WARN S3-4 Default encryption: AES256 (SSE-S3 only…)` |
+| Weak bucket: no TLS-only policy | `FAIL S3-5 No bucket policy, so non-TLS requests are not denied` |
+| Over-privileged role | `FAIL IAM-1 … Allow "Action": "*" on "Resource": "*" (full admin) [permissions boundary: SecLab-DenyAllBoundary…]` |
+| Open SSH | `FAIL EC2-1 … Ingress SSH (22) from 0.0.0.0/0; not attached to anything` |
+
+The role is still reported as a FAIL even though the boundary neutralises it.
+The finding notes the boundary, because a boundary is a mitigation that can be
+removed, not a fix for the policy itself.
+
+**The audit also surfaced real findings in the managed sandbox account:**
+
+| Finding | Assessment |
+|---|---|
+| `FAIL IAM-2 role/AccountFullAccessRole`: AdministratorAccess | This is the sandbox's admin role, the one used to build the lab. It's expected in a sandbox; in production you would scope it down or limit it with SCPs. |
+| `WARN IAM-3` ×2: AWS-managed roles trust the Organizations management account without `sts:ExternalId` | Created by AWS Organizations account management; the trusted account is this organization's management account. Accepted risk: a cross-account trust inside the same organization. |
+| `FAIL IAM-5`: root MFA not enabled | Root credentials in a managed member account are typically removed centrally by the organization. Verify with the account owner; if root has no password, this is an accepted exception. |
+| `WARN IAM-8`: no password policy | No IAM users exist (access is via the sandbox role), so the risk is low; setting a policy is still good hygiene. |
+
 ## Verification
 
 Each control was confirmed independently with the AWS CLI rather than by
@@ -204,6 +275,31 @@ arn:aws:ec2:us-east-2:111122223333:security-group/sg-xxxxxxxx
 
 The IAM role and boundary policy are tagged too, but the Resource Groups
 Tagging API doesn't cover IAM. Cleanup has to find them through IAM's own API.
+
+### Step 3: auditor logic tested against crafted policies
+
+Separately from the live account, the policy analysers were run on crafted
+documents, including cases that must **not** be flagged:
+
+```
+perm  NotAction on *         -> FAIL  Allow with NotAction on all resources
+perm  iam:* on *             -> FAIL  Allow "iam:*" on "Resource": "*"
+perm  s3:* on *              -> WARN  Allow "s3:*" on "Resource": "*"
+perm  s3:* scoped (ok)       -> (none)
+perm  Deny * (ok)            -> (none)
+perm  single stmt dict       -> FAIL  Allow "Action": "*" on "Resource": "*"
+trust Principal *            -> FAIL  Trusts Principal "*" with no Condition
+trust AWS * + condition      -> WARN  Trusts Principal "*" (restricted only by a Condition)
+trust external no ExtId      -> WARN  Trusts external account ... with no sts:ExternalId ...
+trust external w/ ExtId (ok) -> (none)
+trust own account (ok)       -> (none)
+trust service (ok)           -> (none)
+```
+
+`--json --redact` output was checked to contain no real account IDs. Your own
+account becomes `111122223333` and each other account gets its own placeholder,
+so cross-account findings still read correctly. The exit code was `1` (FAILs
+present), as designed.
 
 ### Idempotency: `setup_lab.py` re-run
 

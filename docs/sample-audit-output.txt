@@ -1,0 +1,35 @@
+AWS security audit  account 111122223333  region us-east-2  YYYY-MM-DD HH:MM UTC
+
+CloudTrail
+  [PASS]  CT-2   seclab-trail                                   Trail is logging  (CIS 3.1)
+  [PASS]  CT-3   seclab-trail                                   Multi-region trail  (CIS 3.1)
+  [PASS]  CT-4   seclab-trail                                   Records global service events (IAM, STS)
+  [PASS]  CT-5   seclab-trail                                   Log file validation enabled  (CIS 3.2)
+  [PASS]  CT-6   seclab-trail                                   Logs encrypted with SSE-KMS  (CIS 3.5)
+  [PASS]  CT-1   account                                        At least one multi-region trail is logging  (CIS 3.1)
+
+S3
+  [PASS]  S3-1   account                                        All four Block Public Access settings on  (CIS 2.1.4)
+  [PASS]  S3-2   seclab-cloudtrail-xxxxxxxx                     All four Block Public Access settings on  (CIS 2.1.4)
+  [PASS]  S3-3   seclab-cloudtrail-xxxxxxxx                     Versioning: Enabled
+  [PASS]  S3-4   seclab-cloudtrail-xxxxxxxx                     Default encryption: aws:kms (KMS key)
+  [PASS]  S3-5   seclab-cloudtrail-xxxxxxxx                     Bucket policy denies non-TLS requests  (CIS 2.1.1)
+  [PASS]  S3-2   seclab-weak-bucket-xxxxxxxx                    All four Block Public Access settings on  (CIS 2.1.4)
+  [FAIL]  S3-3   seclab-weak-bucket-xxxxxxxx                    Versioning: Never enabled
+  [WARN]  S3-4   seclab-weak-bucket-xxxxxxxx                    Default encryption: AES256 (SSE-S3 only, no customer-managed key)
+  [FAIL]  S3-5   seclab-weak-bucket-xxxxxxxx                    No bucket policy, so non-TLS requests are not denied  (CIS 2.1.1)
+
+IAM
+  [FAIL]  IAM-2  role/AccountFullAccessRole                     AWS managed policy AdministratorAccess attached  (CIS 1.16)
+  [FAIL]  IAM-1  role/SecLab-OverPrivilegedRole                 Inline policy SecLab-AllowEverything: Allow "Action": "*" on "Resource": "*" (full admin) [permissions boundary: SecLab-DenyAllBoundary; effective access may be lower]  (CIS 1.16)
+  [WARN]  IAM-3  role/AWSManagedAccountManagementAccessRole     Trusts external account 222233334444 with no sts:ExternalId or aws:PrincipalOrgID condition
+  [WARN]  IAM-3  role/AWSManagedAdvancedFeaturesActivationRole  Trusts external account 222233334444 with no sts:ExternalId or aws:PrincipalOrgID condition
+  [PASS]  IAM-4  root                                           Root account has no access keys  (CIS 1.4)
+  [FAIL]  IAM-5  root                                           Root account MFA not enabled (accept only if root credentials are centrally removed by AWS Organizations)  (CIS 1.5)
+  [PASS]  IAM-6  account                                        0 IAM users; none with a console password but no MFA, no access keys older than 90 days
+  [WARN]  IAM-8  account                                        No account password policy set (AWS defaults apply)  (CIS 1.8)
+
+EC2 security groups
+  [FAIL]  EC2-1  sg-xxxxxxxxxxxxxxxxx (seclab-open-ssh)         Ingress SSH (22) from 0.0.0.0/0; not attached to anything  (CIS 5.2)
+
+Summary: PASS 14  FAIL 6  WARN 4  ERROR 0
