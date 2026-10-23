@@ -1,21 +1,100 @@
 # AWS Cloud Security Lab
 
-A hands-on lab in a single AWS sandbox account (us-east-2): apply a security
-baseline, deploy deliberately misconfigured resources, then detect them with
-Python/boto3 audit tooling and review CloudTrail for risky activity.
+A hands-on lab in a single AWS sandbox account (us-east-2). It applies a
+security baseline, deploys deliberately misconfigured resources, detects them
+with Python/boto3 tooling, and reviews CloudTrail for risky activity. Every
+control is then checked independently with the AWS CLI.
 
-Everything is free-tier or near-free (~$1/month for one KMS key). No EC2
-instances, GuardDuty, Security Hub, or AWS Config. All lab resources are tagged
+Everything is free-tier or near-free (about $1/month, for one KMS key). No EC2
+instances, GuardDuty, Security Hub or AWS Config. All lab resources are tagged
 `Project=SecurityLab`.
 
-> Account IDs, key IDs and bucket suffixes in this README are redacted
-> (`111122223333`, `<key-id>`, `xxxxxxxx`).
+> Account IDs, key IDs, bucket suffixes, security group IDs and IP addresses in
+> this repo are redacted (`111122223333`, `<key-id>`, `xxxxxxxx`, `x.x.x.x`).
 
-## Requirements
+## What this demonstrates
 
-- Python 3.12+ and `pip install -r requirements.txt`
-  (`boto3[crt]` — the CRT extra is needed for `aws login` credentials)
-- AWS credentials with admin rights in a sandbox account
+- **Secure-by-design audit logging.** A CloudTrail trail writes to an S3 bucket
+  encrypted with a customer-managed KMS key. The key policy and bucket policy
+  are both limited to the one trail (`aws:SourceArn`), which prevents the
+  confused-deputy problem. Requests without TLS are denied, and log file
+  validation provides tamper evidence.
+- **Configuration auditing as code.** `audit.py` runs 20 checks across
+  CloudTrail, S3, IAM and EC2, mapped to the CIS AWS Foundations Benchmark,
+  with exit codes suitable for CI pipelines.
+- **IAM policy analysis without managed tooling.** IAM Access Analyzer is
+  blocked by an Organizations SCP, so IAM permission and trust policies are
+  analysed directly.
+- **Detection from audit logs.** `cloudtrail_review.py` scores risky actions
+  from their request parameters (for example, SSH opened to `0.0.0.0/0`, or a
+  policy granting `"*"` on `"*"`), not just their event names.
+- **Evidence over assertions.** Each control was confirmed with independent
+  CLI checks, and the analysers were tested on crafted inputs, including cases
+  that must *not* be flagged. Real findings in the account were assessed rather
+  than ignored.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    setup["setup_lab.py"] --> trail
+    setup --> weak
+    subgraph baseline["Baseline (Step 1)"]
+        trail["CloudTrail trail<br/>multi-region · log validation"] -->|"writes logs"| bucket["S3 log bucket<br/>versioned · TLS-only · BPA"]
+        key["KMS customer managed key<br/>rotation on"] -.->|"encrypts"| bucket
+        bpa["Account-level S3<br/>Block Public Access"]
+    end
+    subgraph weak["Deliberate misconfigurations (Step 2)"]
+        wb["Weak S3 bucket<br/>no versioning · SSE-S3 only · no TLS policy"]
+        role["IAM role: Allow * on *<br/>(deny-all permissions boundary)"]
+        sg["Security group<br/>SSH from 0.0.0.0/0 (unattached)"]
+    end
+    audit["audit.py<br/>config APIs"] -->|"PASS / FAIL / WARN"| baseline
+    audit --> weak
+    review["cloudtrail_review.py"] -->|"LookupEvents<br/>us-east-2 + us-east-1"| history["CloudTrail<br/>event history"]
+    teardown["teardown_lab.py"] -.->|"tag-based cleanup"| weak
+    teardown -.-> baseline
+```
+
+## Repository layout
+
+```
+setup_lab.py            Build the baseline (Step 1) and misconfigurations (Step 2); safe to rerun
+audit.py                Read-only security configuration audit (Step 3)
+cloudtrail_review.py    Risky-activity review of CloudTrail event history (Step 4)
+teardown_lab.py         Tag-based cleanup with dry run and confirmation (Step 5)
+requirements.txt        boto3[crt]
+docs/
+  sample-audit-output.txt        Redacted audit.py report
+  sample-cloudtrail-review.txt   Redacted cloudtrail_review.py report
+```
+
+## Quick start
+
+Requirements: Python 3.12+, and AWS credentials with admin rights in a
+**sandbox** account. Never run this in production: it deliberately creates
+weak resources.
+
+```
+pip install -r requirements.txt     # boto3[crt]: the CRT extra is needed for `aws login` credentials
+python setup_lab.py                 # build the lab (us-east-2 by default)
+python audit.py                     # configuration audit
+python cloudtrail_review.py         # risky-activity review (allow ~15 min for new events to appear)
+python teardown_lab.py --dry-run    # preview cleanup, then run without --dry-run
+```
+
+## Cost
+
+| Item | Cost |
+|---|---|
+| KMS customer managed key | about $1/month, prorated hourly |
+| KMS requests | negligible; the S3 Bucket Key reduces calls from S3 to KMS |
+| CloudTrail trail (management events) | free: the first copy of management events per region |
+| S3 storage for logs | a few KB per day, a fraction of a cent |
+| LookupEvents, IAM, security groups, Block Public Access | free |
+
+No compute is created. After teardown, the KMS key stops being charged once its
+deletion completes (7-day minimum waiting period).
 
 ## Step 1 — Baseline controls (`setup_lab.py`)
 
@@ -476,3 +555,44 @@ Baseline complete.
     ingress rule tcp/22 from 0.0.0.0/0 already present
 Misconfigured test resources complete.
 ```
+
+## Lessons learned
+
+- **"Unencrypted S3 bucket" is no longer a valid test case.** S3 has applied
+  SSE-S3 to every new bucket since January 2023. Today the meaningful questions
+  are *whose key* (SSE-S3 or a customer-managed KMS key) and *in transit*
+  (is there a TLS-only policy?).
+- **IAM and sign-in events are recorded in us-east-1.** A CloudTrail review
+  that only queries your working region misses every IAM change.
+- **The Resource Groups Tagging API doesn't cover IAM.** Tag-based cleanup must
+  query IAM separately, or roles and policies are silently left behind.
+- **Managed accounts have guardrails you can't see from inside.** The SCP
+  denying Access Analyzer could only be read from the management account. The
+  tooling therefore reports what it couldn't check as `ERROR`, never as a
+  silent PASS.
+- **A permissions boundary is a mitigation, not a fix.** The IAM policy
+  simulator showed the boundary blocking everything, yet the role is still
+  reported as a FAIL: boundaries can be removed, and that removal
+  (`DeleteRolePermissionsBoundary`) is itself flagged as HIGH by the review.
+- **Small API details:** `kms get-key-rotation-status` rejects aliases; the
+  first CloudTrail digest can precede the first log file; boto3 needs the `crt`
+  extra to use `aws login` sessions.
+
+## Limitations and next steps
+
+- **Single account and region.** S3 and EC2 checks are limited to the chosen
+  region. An organization-wide version would assume a read-only role in each
+  member account.
+- **IAM analysis is pattern-based.** It doesn't evaluate SCPs, conditions or
+  resource-based policies on other services the way Access Analyzer's formal
+  reasoning does.
+- **LookupEvents covers management events only, for 90 days.** Data events
+  (S3 object access) would need a trail with data event selectors (extra cost)
+  and a query tool such as Athena.
+- **CIS references are an approximate mapping** to CIS AWS Foundations v3.0
+  numbering.
+- **Teardown has so far been verified by dry run and the abort path only.** A
+  full teardown-and-rebuild run is planned before the repo goes public.
+- Possible extensions: a GitHub Actions workflow running `audit.py --json`
+  through OIDC role federation; an EventBridge rule alerting on `StopLogging`
+  in near real time.
