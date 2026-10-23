@@ -342,6 +342,9 @@ Results found for 2026-10-23T19:30:00Z to 2026-10-23T21:45:14Z:
 15/15 log files valid
 ```
 
+(These results are from the first build. That log bucket was deleted in the
+Step 5 teardown test, and the rebuilt trail starts a new digest chain.)
+
 `LatestDeliveryError` is `None`, so both the bucket policy and the KMS key
 policy allow CloudTrail to write. `validate-logs` checks each hourly digest's
 signature, follows the chain of digests (each one references the previous),
@@ -548,6 +551,57 @@ Afterwards the CLI confirmed every resource was untouched: the trail was still
 logging, the role, security group and weak bucket still existed, and the key was
 `Enabled`.
 
+### Step 5: real teardown, rebuild and re-audit
+
+The full cycle was run for real: teardown, then an independent CLI check, then
+`setup_lab.py` from scratch, then `audit.py`.
+
+```
+$ python teardown_lab.py --yes
+==> CloudTrail
+    stopped logging and deleted trail seclab-trail
+==> S3 buckets
+    deleted 89 object versions/delete markers, then bucket seclab-cloudtrail-xxxxxxxx
+    deleted 0 object versions/delete markers, then bucket seclab-weak-bucket-xxxxxxxx
+==> IAM roles
+    removed 1 inline / 0 attached policies, deleted role SecLab-OverPrivilegedRole
+==> IAM policies
+    deleted policy SecLab-DenyAllBoundary
+==> Security groups
+    deleted security group sg-xxxxxxxxxxxxxxxxx (seclab-open-ssh)
+==> KMS keys
+    deleted alias(es) alias/seclab-cloudtrail; key <key-id> deletes on 2026-10-30 (cancel with: aws kms cancel-key-deletion ...)
+==> Account-level S3 Block Public Access
+    left ON (account guardrail, not a lab resource)
+Teardown complete.
+```
+
+Independent CLI check afterwards. Each lookup returned "not found", and the
+only guardrail kept was still on:
+
+```
+trail         get-trail                    TrailNotFoundException
+log bucket    head-bucket                  404 Not Found
+weak bucket   head-bucket                  404 Not Found
+role          get-role                     NoSuchEntity
+policy        get-policy                   NoSuchEntity
+sg            describe-security-groups     InvalidGroup.NotFound
+alias         describe-key alias/...       NotFoundException
+old key       describe-key <key-id>        PendingDeletion  2026-10-30
+account BPA   get-public-access-block      True True True True
+tagged left   get-resources                only the pending-deletion KMS key
+```
+
+`setup_lab.py` then rebuilt everything from scratch: every resource reported
+`created`, with a new key, new bucket suffixes and a new security group. The
+re-audit matched the original exactly, **PASS 14, FAIL 6, WARN 4**, with the
+same findings.
+
+The rebuild leaves the old key tagged but pending deletion, so a later teardown
+finds two keys. A dry run confirmed this case is handled: the new key is
+scheduled for deletion, and the old one is reported as `already pending
+deletion` instead of erroring.
+
 ### Idempotency: `setup_lab.py` re-run
 
 After each step the script was run again to prove it is safe to repeat: every
@@ -602,8 +656,9 @@ Misconfigured test resources complete.
   and a query tool such as Athena.
 - **CIS references are an approximate mapping** to CIS AWS Foundations v3.0
   numbering.
-- **Teardown has so far been verified by dry run and the abort path only.** A
-  full teardown-and-rebuild run is planned before the repo goes public.
+- **Teardown deletes the CloudTrail logs too** (unless you use `--keep-logs`).
+  The log-validation evidence above came from the first build; that bucket was
+  deleted in the teardown test.
 - Possible extensions: a GitHub Actions workflow running `audit.py --json`
   through OIDC role federation; an EventBridge rule alerting on `StopLogging`
   in near real time.
