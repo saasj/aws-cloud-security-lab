@@ -189,6 +189,38 @@ Full redacted output: [`docs/sample-cloudtrail-review.txt`](docs/sample-cloudtra
 | `MEDIUM UpdateAssumeRolePolicy` ×3 via `account.amazonaws.com` | AWS Organizations account provisioning updating the managed roles that `audit.py` flagged in IAM-3. Expected. |
 | `MEDIUM AccessDenied (aggregate)` | Calls blocked by the SCP (`ListAnalyzers`, the Access Analyzer probe made while planning this lab) plus console background calls. This is the SCP visibly working. |
 
+## Step 5 — Cleanup (`teardown_lab.py`)
+
+```
+python teardown_lab.py --dry-run     # show what would be deleted; change nothing
+python teardown_lab.py               # asks you to type DELETE
+python teardown_lab.py --yes         # no prompt
+python teardown_lab.py --keep-logs   # keep the CloudTrail bucket and its KMS key as evidence
+```
+
+**Safety design**
+
+- **Only tagged resources.** Discovery uses the Resource Groups Tagging API
+  (CloudTrail, S3, KMS, EC2) **plus IAM's own APIs**, because the tagging API
+  doesn't cover IAM. Each resource's `Project=SecurityLab` tag is **checked again
+  just before it is deleted**, so stale search results can't delete the wrong
+  thing. Resource types the script doesn't handle are listed as `UNHANDLED`,
+  not deleted.
+- **Dependency order:**
+  1. Stop logging and delete the trail.
+  2. Empty each bucket, including every object version and delete marker.
+  3. Delete the buckets.
+  4. Remove the role's inline and attached policies and instance profiles, then delete the role.
+  5. Delete the boundary policy (skipped if anything untagged still uses it).
+  6. Delete the security group (skipped if attached to anything).
+  7. Remove the KMS alias and **schedule the key for deletion in 7 days**, the
+     minimum AWS allows. Cancel with `aws kms cancel-key-deletion` during that window.
+- **`--keep-logs`** keeps the log bucket *and* its KMS key together. Logs whose
+  key has been deleted can never be decrypted again.
+- **Account-level S3 Block Public Access is left on.** It's an account
+  guardrail, not a lab resource.
+- Exit code 1 if any deletion fails or the prompt is declined.
+
 ## Verification
 
 Each control was confirmed independently with the AWS CLI rather than by
@@ -389,6 +421,42 @@ Console IAM user no MFA        -> HIGH    Console sign-in without MFA
 Console SSO role               -> LOW     Console sign-in (federated/SSO)
 CreateAccessKey failed         -> HIGH    [FAILED: AccessDenied]
 ```
+
+### Step 5: teardown dry run and abort path
+
+```
+$ python teardown_lab.py --dry-run
+==> Resources tagged Project=SecurityLab
+    CloudTrail trail  arn:aws:cloudtrail:us-east-2:111122223333:trail/seclab-trail
+    S3 bucket         seclab-cloudtrail-xxxxxxxx
+    S3 bucket         seclab-weak-bucket-xxxxxxxx
+    IAM role          SecLab-OverPrivilegedRole
+    IAM policy        arn:aws:iam::111122223333:policy/SecLab-DenyAllBoundary
+    Security group    sg-xxxxxxxxxxxxxxxxx
+    KMS key           arn:aws:kms:us-east-2:111122223333:key/<key-id>
+==> CloudTrail
+    would stop logging and delete trail seclab-trail
+==> S3 buckets
+    would delete 40 object versions/delete markers, then bucket seclab-cloudtrail-xxxxxxxx
+    would delete 0 object versions/delete markers, then bucket seclab-weak-bucket-xxxxxxxx
+==> IAM roles
+    would remove 1 inline / 0 attached policies, 0 instance profiles, then delete role SecLab-OverPrivilegedRole
+==> IAM policies
+    would delete policy SecLab-DenyAllBoundary (and its non-default versions)
+==> Security groups
+    would delete security group sg-xxxxxxxxxxxxxxxxx (seclab-open-ssh)
+==> KMS keys
+    would delete alias(es) alias/seclab-cloudtrail and schedule key <key-id> for deletion in 7 days
+Dry run complete; nothing was changed.
+```
+
+All seven lab resources were found, including the two IAM resources that the
+tagging API can't see. `--keep-logs` was dry-run too: it marked the log bucket
+and KMS key `KEEP` and planned everything else. Answering anything other than
+`DELETE` at the prompt printed `Aborted; nothing was changed.` and exited 1.
+Afterwards the CLI confirmed every resource was untouched: the trail was still
+logging, the role, security group and weak bucket still existed, and the key was
+`Enabled`.
 
 ### Idempotency: `setup_lab.py` re-run
 
